@@ -78,8 +78,13 @@ class BookingFlowTest {
         }
         awaitQuiet();
 
-        Integer confirmed = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM bookings WHERE status = 'CONFIRMED'", Integer.class);
+        // Count only this race's patients: other tests in this class also book, in the same database.
+        int confirmed = 0;
+        for (String phone : phones) {
+            confirmed += jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM bookings WHERE status = 'CONFIRMED' AND phone_e164 = ?",
+                    Integer.class, phone);
+        }
         assertThat(confirmed).isEqualTo(1);
         assertThat(doubleBookedSlots()).isZero();
         for (String phone : phones) {
@@ -116,6 +121,23 @@ class BookingFlowTest {
         assertThat(outboundCount(phone)).isEqualTo(2);
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM offered_slots WHERE phone_e164 = ?", Integer.class, phone)).isZero();
+    }
+
+    @Test
+    void reviewerEndpointShowsTheConversation() throws Exception {
+        String phone = uniquePhone();
+        send(textPayload("wamid." + UUID.randomUUID(), phone,
+                "I want a thyroid test on 2026-11-30 at 09:00. My name is Review Patient."));
+        awaitQuiet();
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/conversations/" + phone))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("ACTIVE"))
+                .andExpect(jsonPath("$.messages_received.length()").value(1))
+                .andExpect(jsonPath("$.replies_sent.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/conversations/9000000000"))
+                .andExpect(status().isNotFound());
     }
 
     private org.springframework.test.web.servlet.ResultActions send(String body) throws Exception {

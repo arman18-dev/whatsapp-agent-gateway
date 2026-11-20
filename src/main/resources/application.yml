@@ -2,7 +2,8 @@ spring:
   application:
     name: whatsapp-agent-gateway
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/gateway}
+    # Render gives the database as host, port, name and user; compose gives one DATABASE_URL.
+    url: ${DATABASE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:gateway}}
     username: ${DB_USER:gateway}
     password: ${DB_PASSWORD:gateway}
     hikari:
@@ -21,7 +22,8 @@ app:
   rate-limit-max: 10
   rate-limit-window-seconds: 60
   lab:
-    base-url: ${LAB_BASE_URL:http://localhost:8081}
+    # Single-service deployment: the mock lab is served by the same process on the same port.
+    base-url: ${LAB_BASE_URL:http://localhost:${PORT:8080}}
     timeout-ms: 2000
     max-attempts: 4
     backoff-base-ms: 200

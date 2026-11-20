@@ -39,12 +39,22 @@ public class ScriptedLlmClient implements LlmClient {
             return toolUse("handoff_to_human", json.createObjectNode().put("reason", "patient asked for a person"));
         }
         if (text.contains("book") || text.contains("test")) {
-            // Spread mode asks for a random day in the next 60, so requests land on many different slots.
-            int offset = spread ? java.util.concurrent.ThreadLocalRandom.current().nextInt(1, 61) : 1;
+            // A day the patient named is used as asked. Otherwise spread mode picks a random day in the next 60.
+            String named = findIn(history, DAY);
+            String from;
+            String to;
+            if (named != null) {
+                from = named;
+                to = named;
+            } else {
+                int offset = spread ? java.util.concurrent.ThreadLocalRandom.current().nextInt(1, 61) : 1;
+                from = LocalDate.now().plusDays(offset).toString();
+                to = LocalDate.now().plusDays(offset + 2).toString();
+            }
             ObjectNode input = json.createObjectNode()
                     .put("test_code", "THYROID")
-                    .put("date_from", LocalDate.now().plusDays(offset).toString())
-                    .put("date_to", LocalDate.now().plusDays(offset + 2).toString());
+                    .put("date_from", from)
+                    .put("date_to", to);
             return toolUse("check_slots", input);
         }
         return text("Hello! Which test would you like to book?");
@@ -57,11 +67,24 @@ public class ScriptedLlmClient implements LlmClient {
         if ("check_slots".equals(toolName)) {
             JsonNode slots = content == null ? null : content.path("slots");
             if (slots != null && slots.isArray() && !slots.isEmpty()) {
-                int index = spread ? java.util.concurrent.ThreadLocalRandom.current().nextInt(slots.size()) : 0;
+                // Prefer the time the patient named; otherwise the first slot (or a random one in spread mode).
+                String time = findIn(history, TIME);
+                int index = 0;
+                if (time != null) {
+                    for (int i = 0; i < slots.size(); i++) {
+                        if (slots.get(i).path("starts_at").asText().contains("T" + time)) {
+                            index = i;
+                            break;
+                        }
+                    }
+                } else if (spread) {
+                    index = java.util.concurrent.ThreadLocalRandom.current().nextInt(slots.size());
+                }
+                String name = findIn(history, NAME);
                 ObjectNode input = json.createObjectNode()
                         .put("slot_id", slots.get(index).path("slot_id").asText())
                         .put("test_code", "THYROID")
-                        .put("patient_name", "Synthetic Patient");
+                        .put("patient_name", name == null ? "Synthetic Patient" : name);
                 return toolUse("book_test", input);
             }
             return text("Sorry, there are no free slots in that range.");
@@ -76,6 +99,24 @@ public class ScriptedLlmClient implements LlmClient {
             };
         }
         return text("A staff member will contact you.");
+    }
+
+    private static final java.util.regex.Pattern DAY = java.util.regex.Pattern.compile("on (\\d{4}-\\d{2}-\\d{2})");
+    private static final java.util.regex.Pattern TIME = java.util.regex.Pattern.compile("at (\\d{2}:\\d{2})");
+    private static final java.util.regex.Pattern NAME = java.util.regex.Pattern.compile("My name is ([A-Za-z][A-Za-z ]*[A-Za-z])\\.");
+
+    /** The most recent patient text that matches the pattern, or null. */
+    private static String findIn(List<LlmMessage> history, java.util.regex.Pattern pattern) {
+        for (int i = history.size() - 1; i >= 0; i--) {
+            LlmMessage message = history.get(i);
+            if (message.isUser() && message.isTextOnly()) {
+                java.util.regex.Matcher matcher = pattern.matcher(message.text());
+                if (matcher.find()) {
+                    return matcher.group(1);
+                }
+            }
+        }
+        return null;
     }
 
     private static String findToolName(List<LlmMessage> history, String toolUseId) {
