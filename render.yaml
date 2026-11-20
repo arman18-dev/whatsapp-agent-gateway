@@ -16,6 +16,8 @@ services:
         value: mock
       - key: LLM_SCRIPTED_SPREAD
         value: "true"
+      - key: DEMO_ENABLED
+        value: "true"
       - key: WORKER_THREADS
         value: "4"
       - key: DB_POOL_SIZE

@@ -119,14 +119,24 @@ public class ToolExecutor {
         return result;
     }
 
-    /** At most 5 slots per day and 15 in total, so patients see several days, not just the first one. */
+    /**
+     * For a single day the whole day is offered (up to 40), so any time the patient asks for can be chosen.
+     * For several days: up to 5 per day and 15 in total, so the patient sees several days.
+     */
     static List<Slot> spreadAcrossDays(List<Slot> slots) {
-        java.util.Map<String, Integer> perDay = new java.util.HashMap<>();
+        java.util.Set<String> days = new java.util.HashSet<>();
+        for (Slot slot : slots) {
+            days.add(slot.startsAt().substring(0, 10));
+        }
+        boolean singleDay = days.size() <= 1;
+        int perDay = singleDay ? 40 : 5;
+        int total = singleDay ? 40 : MAX_SLOTS;
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
         List<Slot> chosen = new java.util.ArrayList<>();
         for (Slot slot : slots) {
             String day = slot.startsAt().substring(0, 10);
-            int count = perDay.merge(day, 1, Integer::sum);
-            if (count <= 5 && chosen.size() < MAX_SLOTS) {
+            int count = counts.merge(day, 1, Integer::sum);
+            if (count <= perDay && chosen.size() < total) {
                 chosen.add(slot);
             }
         }

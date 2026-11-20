@@ -55,3 +55,7 @@ app:
     min-latency-ms: 300
     max-latency-ms: 1500
     hang-ms: 2500
+
+  # Public demo page and endpoints. Only works in mock mode (see DemoController).
+  demo:
+    enabled: ${DEMO_ENABLED:false}

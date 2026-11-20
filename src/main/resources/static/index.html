@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab booking agent: live demo</title>
+  <style>
+    :root { color-scheme: light dark; --line: #d0d7de; --muted: #57606a; --ok: #1a7f37; --bad: #cf222e; }
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0 auto; max-width: 880px; padding: 16px; line-height: 1.45; }
+    h1 { font-size: 1.5rem; margin: 0.4rem 0; }
+    h2 { font-size: 1.15rem; margin-top: 1.6rem; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+    p.note { color: var(--muted); font-size: 0.92rem; }
+    label { display: block; font-weight: 600; margin-top: 0.8rem; }
+    input, textarea, select { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+    textarea { min-height: 70px; }
+    button { font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid #1f6feb; background: #1f6feb; color: #fff; cursor: pointer; margin-top: 0.8rem; }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .status { margin-top: 0.6rem; min-height: 1.4em; color: var(--muted); }
+    .bubble { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 6px 0; white-space: pre-wrap; }
+    .from-patient { background: rgba(31, 111, 235, 0.08); }
+    .from-lab { background: rgba(26, 127, 55, 0.08); }
+    .label { font-size: 0.8rem; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .empty { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>Lab booking agent: live demo</h1>
+  <p class="note">
+    A patient messages the lab on WhatsApp. The agent checks the lab's calendar, books a test, and hands off to staff when it cannot finish.
+    This page is a simulation: messages are sent in WhatsApp's format, and replies appear here instead of on a phone.
+    The demo uses a scripted model and a mock lab, so it costs nothing to run.
+  </p>
+
+  <h2>Send a message as a patient</h2>
+  <label for="phone">Patient phone number (digits only)</label>
+  <input id="phone" inputmode="numeric" maxlength="15">
+
+  <label for="preset">Example messages</label>
+  <select id="preset">
+    <option value="">Choose an example, or type your own below</option>
+    <option value="I want a thyroid test on 2026-12-01 at 10:30. My name is Asha Verma.">Book a thyroid test at 10:30</option>
+    <option value="Can I get a thyroid test on 2026-12-02 at 14:00? My name is Rahul Mehta.">Book a thyroid test at 14:00</option>
+    <option value="I want a thyroid test on 2026-12-05 at 16:30. My name is Vikram Singh.">Saturday 16:30 (lab closes at 13:00)</option>
+    <option value="Hello, good morning.">A greeting</option>
+    <option value="I would like to speak to a person please.">Ask for a person (handoff)</option>
+  </select>
+
+  <label for="text">Message</label>
+  <textarea id="text" maxlength="500" placeholder="I want a thyroid test on 2026-12-03 at 09:00. My name is ..."></textarea>
+
+  <button id="send">Send</button>
+  <div class="status" id="status"></div>
+
+  <div id="thread"></div>
+
+  <h2>Recent confirmed bookings</h2>
+  <div id="bookings"><p class="empty">Loading...</p></div>
+  <p class="note"><button id="refresh" style="margin-top:0">Refresh</button></p>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function randomPhone() {
+      let digits = "99";
+      for (let i = 0; i < 8; i++) digits += Math.floor(Math.random() * 10);
+      return digits;
+    }
+
+    function bubble(who, when, text) {
+      const div = document.createElement("div");
+      div.className = "bubble " + (who === "patient" ? "from-patient" : "from-lab");
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = (who === "patient" ? "Patient" : "Lab agent") + (when ? " · " + when : "");
+      const body = document.createElement("div");
+      body.textContent = text;
+      div.append(label, body);
+      return div;
+    }
+
+    function showStatus(text) { $("status").textContent = text; }
+
+    async function loadBookings() {
+      const box = $("bookings");
+      try {
+        const res = await fetch("/demo/recent-bookings");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const rows = await res.json();
+        box.replaceChildren();
+        if (rows.length === 0) {
+          const p = document.createElement("p");
+          p.className = "empty";
+          p.textContent = "No confirmed bookings yet. Send a message above to make one.";
+          box.append(p);
+          return;
+        }
+        const table = document.createElement("table");
+        const head = table.createTHead().insertRow();
+        ["Reference", "Patient", "Test", "When (India time)", "Site"].forEach((h) => {
+          const th = document.createElement("th");
+          th.textContent = h;
+          head.append(th);
+        });
+        const body = table.createTBody();
+        for (const r of rows) {
+          const tr = body.insertRow();
+          const when = new Date(r.starts_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" });
+          [r.lab_booking_ref, r.patient_name, r.test_code, when, r.lab_site].forEach((v) => {
+            const td = document.createElement("td");
+            td.textContent = v;
+            tr.append(td);
+          });
+        }
+        box.append(table);
+      } catch (e) {
+        box.replaceChildren();
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "Could not load bookings (" + e.message + ").";
+        box.append(p);
+      }
+    }
+
+    async function showConversation(phone) {
+      const thread = $("thread");
+      thread.replaceChildren();
+      const res = await fetch("/conversations/" + encodeURIComponent(phone));
+      if (!res.ok) return null;
+      const c = await res.json();
+      const items = [];
+      c.messages_received.forEach((m) => items.push({ who: "patient", at: m.received_at, text: m.body }));
+      c.replies_sent.forEach((r) => items.push({ who: "lab", at: r.created_at, text: r.body }));
+      items.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+      items.forEach((i) => thread.append(bubble(i.who, i.at ? new Date(i.at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }) : "", i.text)));
+      if (c.handoffs.length) {
+        const p = document.createElement("p");
+        p.className = "note";
+        p.textContent = "Handed to staff: " + c.handoffs.join("; ");
+        thread.append(p);
+      }
+      return c;
+    }
+
+    async function send() {
+      const phone = $("phone").value.trim();
+      const text = $("text").value.trim();
+      if (!/^[0-9]{6,15}$/.test(phone)) { showStatus("Enter a phone number of 6 to 15 digits."); return; }
+      if (!text) { showStatus("Type a message first."); return; }
+
+      const button = $("send");
+      button.disabled = true;
+      showStatus("Sending...");
+      try {
+        const res = await fetch("/demo/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone, text }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        showStatus("Sent. Waiting for the lab agent to reply...");
+        let conversation = null;
+        for (let attempt = 0; attempt < 15; attempt++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          conversation = await showConversation(phone);
+          if (conversation && conversation.replies_sent.length > 0) break;
+        }
+        showStatus(conversation && conversation.replies_sent.length
+          ? "Reply received. Look up this number again any time to see the full thread."
+          : "No reply yet. The service may be waking up; try again in a moment.");
+        await loadBookings();
+      } catch (e) {
+        showStatus("Could not send (" + e.message + ").");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    $("phone").value = randomPhone();
+    $("preset").addEventListener("change", () => { if ($("preset").value) $("text").value = $("preset").value; });
+    $("send").addEventListener("click", send);
+    $("refresh").addEventListener("click", loadBookings);
+    loadBookings();
+  </script>
+</body>
+</html>

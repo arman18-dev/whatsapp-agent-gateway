@@ -71,12 +71,19 @@ public class ScriptedLlmClient implements LlmClient {
                 String time = findIn(history, TIME);
                 int index = 0;
                 if (time != null) {
+                    // Book only the time the patient asked for. If it is not offered, say so.
+                    int found = -1;
                     for (int i = 0; i < slots.size(); i++) {
                         if (slots.get(i).path("starts_at").asText().contains("T" + time)) {
-                            index = i;
+                            found = i;
                             break;
                         }
                     }
+                    if (found < 0) {
+                        return text("I'm sorry, there is no slot at " + time
+                                + " that day. Would you like one of the other times?");
+                    }
+                    index = found;
                 } else if (spread) {
                     index = java.util.concurrent.ThreadLocalRandom.current().nextInt(slots.size());
                 }

@@ -11,14 +11,25 @@ import org.junit.jupiter.api.Test;
 class SlotSpreadTest {
 
     @Test
-    void capsEachDayAtFiveSlots() {
+    void aSingleDayOffersTheWholeDay() {
+        // Seventeen slots on one day: all of them are offered, so 14:00 can be chosen, not only the morning.
         List<Slot> slots = new ArrayList<>();
         for (int i = 0; i < 17; i++) {
             slots.add(new Slot("A" + i, "2026-11-23T" + String.format("%02d", 8 + i / 2) + ":"
                     + (i % 2 == 0 ? "00" : "30") + ":00+05:30", "MAIN"));
         }
         List<Slot> chosen = ToolExecutor.spreadAcrossDays(slots);
-        assertThat(chosen).hasSize(5);
+        assertThat(chosen).hasSize(17);
+        assertThat(chosen).extracting(Slot::slotId).contains("A12");  // 14:00
+    }
+
+    @Test
+    void aSingleDayIsCappedAtFortySlots() {
+        List<Slot> slots = new ArrayList<>();
+        for (int i = 0; i < 60; i++) {
+            slots.add(new Slot("B" + i, "2026-11-23T10:00:00+05:30", "MAIN"));
+        }
+        assertThat(ToolExecutor.spreadAcrossDays(slots)).hasSize(40);
     }
 
     @Test
