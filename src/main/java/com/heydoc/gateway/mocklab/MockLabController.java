@@ -1,7 +1,10 @@
 package com.heydoc.gateway.mocklab;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,9 +27,6 @@ import org.springframework.web.server.ResponseStatusException;
 @Profile("mock-lab")
 public class MockLabController {
 
-    private static final int[] HOURS = {9, 10, 11, 14, 15};
-    private static final int DAYS = 3;
-
     private final MockLabState state;
     private final MockLabFaults faults;
 
@@ -35,6 +35,10 @@ public class MockLabController {
         this.faults = faults;
     }
 
+    /**
+     * A realistic lab day: Monday to Friday 08:00 to 18:00, Saturday 08:00 to 13:00, closed Sunday,
+     * one slot every 30 minutes. A request covers at most 14 days.
+     */
     @GetMapping("/slots")
     public List<Map<String, Object>> slots(@RequestParam("test_code") String testCode,
                                            @RequestParam("from") String from,
@@ -43,15 +47,27 @@ public class MockLabController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
         }
         LocalDate start = parseDate(from);
+        LocalDate end = parseDate(to);
+        if (end.isBefore(start)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "to is before from");
+        }
+        LocalDate last = start.plusDays(13);
+        if (end.isAfter(last)) {
+            end = last;
+        }
         List<Map<String, Object>> slots = new ArrayList<>();
-        for (int day = 0; day < DAYS; day++) {
-            LocalDate date = start.plusDays(day);
-            for (int hour : HOURS) {
-                String slotId = "SLT-" + testCode + "-" + date.toString().replace("-", "") + "-" + hour;
+        for (LocalDate date = start; !date.isAfter(end); date = date.plusDays(1)) {
+            if (date.getDayOfWeek() == DayOfWeek.SUNDAY) {
+                continue;  // closed
+            }
+            LocalTime close = date.getDayOfWeek() == DayOfWeek.SATURDAY ? LocalTime.of(13, 0) : LocalTime.of(18, 0);
+            for (LocalTime time = LocalTime.of(8, 0); time.isBefore(close); time = time.plusMinutes(30)) {
+                String slotId = "SLT-" + testCode + "-" + date.format(DateTimeFormatter.BASIC_ISO_DATE)
+                        + "-" + time.format(DateTimeFormatter.ofPattern("HHmm"));
                 slots.add(Map.of(
                         "slot_id", slotId,
                         "test_code", testCode,
-                        "starts_at", date + "T" + String.format("%02d", hour) + ":00:00+05:30",
+                        "starts_at", date + "T" + time + ":00+05:30",
                         "lab_site", "MAIN"));
             }
         }

@@ -100,6 +100,11 @@ public class ConversationProcessor {
                 continue;
             }
 
+            if (spentUsd() >= llmProperties.budgetUsd()) {
+                // Spend cap reached: stop calling the model and hand off rather than keep spending.
+                handOff(waMessageId, phone, "budget_exhausted");
+                return;
+            }
             LlmResponse response = llm.complete(history);
             recordCost(phone, waMessageId, response.usage());
             storeTurn(phone, "assistant", response.parts(), null);
@@ -168,6 +173,11 @@ public class ConversationProcessor {
                 VALUES (?, ?, ?::jsonb, ?, now())
                 ON CONFLICT (wa_message_id) DO NOTHING
                 """, phone, role, partsToJson(parts).toString(), waMessageId);
+    }
+
+    private double spentUsd() {
+        Double total = jdbc.queryForObject("SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls", Double.class);
+        return total == null ? 0 : total;
     }
 
     private void recordCost(String phone, String waMessageId, LlmResponse.Usage usage) {

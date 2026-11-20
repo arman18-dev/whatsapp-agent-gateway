@@ -28,7 +28,8 @@ import org.springframework.stereotype.Component;
 @Profile("worker")
 public class ToolExecutor {
 
-    private static final int MAX_SLOTS = 5;
+    private static final int MAX_SLOTS = 15;
+    private static final java.time.ZoneId LAB_ZONE = java.time.ZoneId.of("Asia/Kolkata");
 
     private final JdbcTemplate jdbc;
     private final LabClient lab;
@@ -82,7 +83,9 @@ public class ToolExecutor {
         String testCode = required(input, "test_code");
         LocalDate from = date(required(input, "date_from"));
         LocalDate to = date(required(input, "date_to"));
-        if (to.isBefore(from)) {
+        LocalDate today = LocalDate.now(LAB_ZONE);
+        if (to.isBefore(from) || from.isBefore(today)) {
+            // Past or reversed dates: the model gets an error and can ask the patient again.
             throw new InvalidToolInput();
         }
 
@@ -94,7 +97,7 @@ public class ToolExecutor {
         }
 
         var out = json.createArrayNode();
-        for (Slot slot : slots.subList(0, Math.min(MAX_SLOTS, slots.size()))) {
+        for (Slot slot : spreadAcrossDays(slots)) {
             jdbc.update("""
                     INSERT INTO slots (slot_id, test_code, starts_at, lab_site, seen_at)
                     VALUES (?, ?, ?::timestamptz, ?, now())
@@ -114,6 +117,20 @@ public class ToolExecutor {
         result.put("status", "OK");
         result.set("slots", out);
         return result;
+    }
+
+    /** At most 5 slots per day and 15 in total, so patients see several days, not just the first one. */
+    static List<Slot> spreadAcrossDays(List<Slot> slots) {
+        java.util.Map<String, Integer> perDay = new java.util.HashMap<>();
+        List<Slot> chosen = new java.util.ArrayList<>();
+        for (Slot slot : slots) {
+            String day = slot.startsAt().substring(0, 10);
+            int count = perDay.merge(day, 1, Integer::sum);
+            if (count <= 5 && chosen.size() < MAX_SLOTS) {
+                chosen.add(slot);
+            }
+        }
+        return chosen;
     }
 
     private ObjectNode bookTest(String phone, LlmPart.ToolUse use) {

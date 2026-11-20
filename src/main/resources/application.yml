@@ -31,6 +31,7 @@ app:
     model: claude-haiku-5-5
     max-tokens: 1024
     max-tool-iterations: 6
+    budget-usd: ${LLM_BUDGET_USD:1.00}
     scripted-spread: ${LLM_SCRIPTED_SPREAD:false}
     pricing:
       input-per-mtok: 0.10

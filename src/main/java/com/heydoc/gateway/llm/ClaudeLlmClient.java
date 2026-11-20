@@ -48,7 +48,7 @@ public class ClaudeLlmClient implements LlmClient {
                 .thinking(ThinkingConfigDisabled.builder().build())
                 .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
                 .systemOfTextBlockParams(List.of(TextBlockParam.builder()
-                        .text(AgentSpec.SYSTEM_PROMPT)
+                        .text(AgentSpec.systemPrompt(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"))))
                         .cacheControl(CacheControlEphemeral.builder().build())
                         .build()));
         for (ToolSpec spec : AgentSpec.TOOLS) {

@@ -46,22 +46,28 @@ public class Reconciler {
     @Scheduled(fixedDelayString = "${app.worker.reconcile-interval-ms:10000}")
     public void run() {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT id, phone_e164 FROM bookings
-                WHERE status IN ('HELD', 'UNKNOWN')
-                  AND updated_at < now() - CAST(? AS int) * interval '1 second'
-                ORDER BY updated_at
+                SELECT b.id, b.phone_e164, s.starts_at, s.lab_site
+                FROM bookings b JOIN slots s ON s.slot_id = b.slot_id
+                WHERE b.status IN ('HELD', 'UNKNOWN')
+                  AND b.updated_at < now() - CAST(? AS int) * interval '1 second'
+                ORDER BY b.updated_at
                 LIMIT 50
                 """, properties.reconcileAfterSeconds());
 
         for (Map<String, Object> row : rows) {
             UUID bookingId = (UUID) row.get("id");
             String phone = (String) row.get("phone_e164");
+            java.sql.Timestamp startsAt = (java.sql.Timestamp) row.get("starts_at");
+            String site = (String) row.get("lab_site");
             try {
                 Optional<String> ref = lab.lookup(bookingId);
                 tx.executeWithoutResult(status -> {
                     if (ref.isPresent()) {
                         bookings.setStatus(bookingId, "CONFIRMED", ref.get());
-                        outbox.enqueue(phone, "Your test is booked. Reference: " + ref.get());
+                        outbox.enqueue(phone, "Your thyroid test is booked for "
+                                + startsAt.toInstant().atZone(java.time.ZoneId.of("Asia/Kolkata"))
+                                        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy 'at' h:mm a"))
+                                + " at the " + site + " lab. Reference: " + ref.get());
                     } else {
                         bookings.setStatus(bookingId, "RELEASED", null);
                         outbox.enqueue(phone, "We could not confirm the slot you chose. Reply to choose another time.");

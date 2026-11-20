@@ -65,9 +65,9 @@ public class BookingService {
         } else {
             try {
                 jdbc.update("""
-                        INSERT INTO bookings (id, phone_e164, slot_id, test_code, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, 'HELD', now(), now())
-                        """, bookingId, phone, slotId, testCode);
+                        INSERT INTO bookings (id, phone_e164, slot_id, test_code, patient_name, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'HELD', now(), now())
+                        """, bookingId, phone, slotId, testCode, patientName);
             } catch (DuplicateKeyException e) {
                 // The partial unique index: another active booking holds this slot.
                 return BookingResult.of("SLOT_TAKEN");

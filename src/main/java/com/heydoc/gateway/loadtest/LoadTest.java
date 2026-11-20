@@ -129,17 +129,19 @@ public final class LoadTest {
     /** 800 unique messages + 200 redeliveries, shuffled. */
     static List<Send> plan() {
         List<Send> unique = new ArrayList<>();
+        // Patients give a date range and a name, so the model can complete a booking.
+        // Dates cycle over 20 days, so requests spread over many lab slots.
         // 10 heavy phones with 15 messages each: 5 over the limit of 10 per minute.
         for (int p = 0; p < 10; p++) {
             String phone = "9100000" + String.format("%03d", p);
             for (int i = 0; i < 15; i++) {
-                unique.add(message("lt-h-" + p + "-" + i, phone, "I want to book a thyroid test"));
+                unique.add(message("lt-h-" + p + "-" + i, phone, bookingText(p * 15 + i, p)));
             }
         }
         // 325 normal phones with 2 messages each.
         for (int p = 0; p < 325; p++) {
             String phone = "9200000" + String.format("%03d", p);
-            unique.add(message("lt-n-" + p + "-0", phone, "I want to book a thyroid test"));
+            unique.add(message("lt-n-" + p + "-0", phone, bookingText(150 + p, p)));
             unique.add(message("lt-n-" + p + "-1", phone, "hi"));
         }
         Random random = new Random(42);
@@ -149,6 +151,21 @@ public final class LoadTest {
         }
         Collections.shuffle(sends, random);
         return sends;
+    }
+
+    /** A booking request with a date range and a name. Dates are in the future of the mock lab. */
+    static String bookingText(int seed, int patient) {
+        // 40 dates, skipping Sundays (the lab is closed), so requests spread over the calendar.
+        java.time.LocalDate day = java.time.LocalDate.of(2026, 11, 23).plusDays(seed % 40);
+        if (day.getDayOfWeek() == java.time.DayOfWeek.SUNDAY) {
+            day = day.plusDays(1);
+        }
+        // Saturday 08:00-12:30 has 10 slots; weekdays 08:00-17:30 have 20. Patients pick different times.
+        int slotsToday = day.getDayOfWeek() == java.time.DayOfWeek.SATURDAY ? 10 : 20;
+        int slotIndex = (seed / 40 * 7 + patient) % slotsToday;
+        java.time.LocalTime time = java.time.LocalTime.of(8, 0).plusMinutes(30L * slotIndex);
+        return "I want a thyroid test on " + day + " at " + time.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                + ". My name is Load Patient " + patient + ".";
     }
 
     private static Send message(String waId, String phone, String text) {

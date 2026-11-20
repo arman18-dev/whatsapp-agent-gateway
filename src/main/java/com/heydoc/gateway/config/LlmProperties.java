@@ -13,6 +13,8 @@ public record LlmProperties(
         @DefaultValue("claude-haiku-5-5") String model,
         @DefaultValue("1024") long maxTokens,
         @DefaultValue("6") int maxToolIterations,
+        /** Hard stop for model spend recorded in llm_calls. Past this, conversations hand off to staff. */
+        @DefaultValue("1.00") double budgetUsd,
         /** mock mode only: pick a random offered slot instead of the first, so load runs spread across slots. */
         @DefaultValue("false") boolean scriptedSpread,
         Pricing pricing
