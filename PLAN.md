@@ -31,18 +31,19 @@ WhatsApp Cloud API
 [gateway]  Spring Boot, profile=gateway
    - verify X-Hub-Signature-256 (HMAC-SHA256 over raw body)
    - parse entry[].changes[].value.messages[]
-   - rate-limit check (per phone, one SQL upsert)
-   - INSERT inbound_messages ... ON CONFLICT (wa_message_id) DO NOTHING
-   - 200 OK                       (no LLM, no lab call on this path)
+   - INSERT inbound_messages ... ON CONFLICT (wa_message_id) DO NOTHING   (dedupe first)
+   - only if the row is new: rate-limit check (per phone, one SQL upsert); over the limit, status = RATE_LIMITED
+   - 200 OK                       (no LLM, no lab call on this path; both DB steps in one transaction)
    |
    v  Postgres: inbound_messages is the queue (status + lease)
 [worker]   same jar, profile=worker, N concurrent threads
-   - claim a message with FOR UPDATE SKIP LOCKED
-   - take a per-conversation advisory lock (messages for one phone run one at a time)
+   - claim a message with FOR UPDATE SKIP LOCKED; lease 90 s, renewed while busy
+   - take a per-conversation session advisory lock with try-lock; if busy, requeue (messages for one phone run one at a time)
    - load conversation history, call Claude with tools
+   - save the assistant turn (including its tool_use IDs) before running its tools
    - each tool call goes through LabClient (timeout, retry, Idempotency-Key)
-   - persist messages, tool calls, usage and cost in one transaction
-   - send reply via OutboundSender (logging stub by default)
+   - persist each step as it happens; no DB transaction is held across an LLM or lab call; usage and cost go to llm_calls
+   - write the reply to outbound_messages; a sender job delivers each row once (logging stub by default)
    |
    v
 [mock-lab]  fake booking API: 20% failures, 300-1500 ms latency,
@@ -61,9 +62,10 @@ WhatsApp Cloud API
    - 2xx: `CONFIRMED`, store the lab booking reference.
    - 409 slot taken: `RELEASED`, tell the patient and offer other slots.
    - timeout, 5xx or network error: stay `UNKNOWN`. Do not create a new booking id. Retry with the same key, or look it up with `GET /bookings?idempotency_key=`.
-4. **Reconciler.** A background task resolves `UNKNOWN` rows older than 10 s by lookup. If the lab has no record after the retry budget, the row becomes `RELEASED` and the patient is offered another slot or a handoff.
+4. **Reconciler.** A background task resolves `UNKNOWN` rows older than 60 s (longer than the longest in-flight retry, about 10 s) by lookup. If the lab has no record after the retry budget, the row becomes `RELEASED` and the patient is offered another slot or a handoff.
+   - **Lab fence (lab contract):** once `GET /bookings?idempotency_key=` returns 404 for a key, a later `POST` with that key is refused. This stops a delayed request from booking a slot that was already released. The mock lab implements it; a real lab must agree to it before go-live.
 5. **Serialise per conversation.** Advisory lock on the phone number, so two quick messages from one patient cannot both book.
-6. **Dedupe at three layers:** `wa_message_id` primary key (webhook), `tool_use_id` primary key (a replayed LLM tool call returns the stored result), booking idempotency key (lab).
+6. **Dedupe at three layers:** `wa_message_id` primary key (webhook); `tool_use_id` primary key, reused on resume because the assistant turn is saved before its tools run; booking idempotency key (lab). After a crash, the one-active-booking-per-slot index and the booking key still stop a repeat booking even if Claude issues new tool IDs.
 
 **Tests that prove it:**
 - 100 threads book the same slot, exactly one `CONFIRMED`.
@@ -72,10 +74,12 @@ WhatsApp Cloud API
 
 ## 6. Failure handling
 
-- **Webhook:** bad or missing signature returns 401 and stores nothing. A duplicate returns 200 with `"status":"duplicate"`. Malformed JSON returns 400.
+- **Webhook:** bad or missing signature returns 401 and stores nothing. A duplicate returns 200 with `"status":"duplicate"` and sends no second reply. Malformed JSON returns 400.
+- **Rate limit:** a message over the limit is stored as `RATE_LIMITED`, gets no reply and makes no LLM call. Silence is the only behaviour; there is no special "please wait" message.
+- **Handoff:** once a conversation is `HANDED_OFF`, each new message gets a fixed reply ("a staff member will contact you") with no LLM or lab call.
 - **LabClient:** timeout 2 s per call. Up to 4 attempts on timeout or 5xx, exponential backoff (base 200 ms, factor 2, cap 3 s, full jitter). `check_slots` (GET) always retries. `book_test` (POST) retries only with the same idempotency key.
 - **Claude API:** SDK retries (`maxRetries = 3`) for 429 and 5xx. If the whole job fails, `attempts` increments with backoff. After 5 attempts the message becomes `DEAD`, and the patient gets a handoff.
-- **Worker crash:** claimed rows carry `locked_until`. Expired leases are reclaimed. Every step is idempotent, so a rerun is safe.
+- **Worker crash:** claimed rows carry `locked_until` (a 90 s lease, renewed while busy). Expired leases are reclaimed. Every step is idempotent, so a rerun is safe.
 
 ## 7. Agent and tool design
 
@@ -88,7 +92,7 @@ Model: `claude-haiku-5-5` (chosen 19 Nov for cost). Prompting is kept short. The
 | `handoff_to_human` | `reason` | `{ticket_id}` | ends automated handling |
 
 **Guardrails in code, not in the prompt:**
-- `book_test` is rejected unless `slot_id` appeared in a `check_slots` result for this conversation. This stops invented IDs.
+- `book_test` is rejected unless `slot_id` appears in the `offered_slots` table for this phone number (filled from `check_slots` results). This stops invented IDs.
 - Tool inputs are validated against the schema. Tools use `strict: true`.
 - At most 6 tool iterations per inbound message.
 - Parallel `tool_use` blocks run, and all results go back in one user message.
@@ -178,6 +182,22 @@ handoffs (
   reason text not null,
   created_at timestamptz not null
 );
+
+offered_slots (                           -- slots shown to a phone; book_test may only use these
+  phone_e164 text not null,
+  slot_id text not null,
+  offered_at timestamptz not null,
+  primary key (phone_e164, slot_id)
+);
+
+outbound_messages (                       -- outbox: each reply is sent once
+  id bigserial primary key,
+  phone_e164 text not null,
+  body text not null,
+  status text not null,                   -- PENDING | SENT | FAILED
+  created_at timestamptz not null,
+  sent_at timestamptz
+);
 ```
 
 ## 9. API contract
@@ -214,10 +234,10 @@ Only `entry[].changes[].value.messages[]` is read (`from`, `id`, `type`, `text.b
 | Haiku 5.5 ($0.10 / $0.50) | 5,000 × 1M × $0.10/MTok = $500 | 300 × 1M × $0.50/MTok = $150 | **≈ $650** |
 | Sonnet 5.5 ($2 / $10), for comparison | $10,000 | $3,000 | ≈ $13,000 |
 
-- **Prompt caching** on the fixed system prompt and tools should cut the input line. The size of the cut is to be measured, not assumed.
+- **Prompt caching (estimate, to be measured):** if 4,000 of the 5,000 input tokens are cached (system prompt and tools), input falls from $500 to about $140 per month (cache reads at 0.1× = $0.01/MTok; cache writes ignored). Total ≈ $290 instead of $650. The Haiku 5.5 price holds for prompts up to 100K input tokens.
 - **Infrastructure (estimate):** two small gateway and worker containers ($60–100), managed Postgres ($50–80), observability self-hosted or free ($0). Total ≈ $150–200 per month.
 - **Not included:** WhatsApp Cloud API conversation charges from Meta. Check the current India rate card before quoting.
-- **Throughput:** 1M messages a month averages 0.4 messages per second. At about 1.5 s per LLM call with 16 worker threads, capacity is about 10 messages per second, roughly 25× the average. Bursts queue in Postgres.
+- **Throughput:** 1M messages a month averages 0.4 messages per second. A message takes more than one LLM call plus lab round-trips, about 4–5 s with 2–3 LLM calls. With 16 worker threads that is about 3–4 messages per second, still roughly 8× the average. Bursts queue in Postgres.
 
 ## 12. Load test
 
@@ -250,3 +270,12 @@ Report: accepted, duplicate and rate-limited counts; ack latency p50, p95, p99; 
 - **Deployment target** is undecided. Render, Fly.io or Cloud Run free tiers, decided at hour 16.
 - **Lab fault model** is my choice: 20% failures plus about 10% of successful responses dropped. This is the hardest case, so it is the one tested.
 - **Patient identity** is the WhatsApp number plus a name entered in chat. Synthetic data only.
+
+## 15. Decisions from the design review (19 Nov 2026)
+
+- Duplicate WhatsApp messages: booked once, no second reply.
+- Rate-limited messages: stored, silent. No special reply, no LLM call.
+- Messages after a handoff: fixed "a staff member will contact you" reply, no LLM or lab call.
+- Lab double-booking fence: adopted as a lab contract (section 5.4). The mock lab implements it.
+- Dedupe runs before the rate limit, so redeliveries never use up quota.
+- No DB transaction is held across an LLM or lab call. Replies go through an outbox.

@@ -1,0 +1,75 @@
+# `docker compose up --build` starts everything. Secrets come from .env (gitignored); see .env.example.
+name: whatsapp-agent-gateway
+
+x-db-env: &db-env
+  DATABASE_URL: jdbc:postgresql://postgres:5432/gateway
+  DB_USER: gateway
+  DB_PASSWORD: gateway
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # Gateway pool 60 + worker pool 40 + mock-lab pool 5 + admin sessions: above the default of 100.
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Fake lab: 20% failures, 300-1500 ms latency, about 10% of bookings dropped after commit.
+  mock-lab:
+    build: .
+    environment:
+      <<: *db-env
+      SPRING_PROFILES_ACTIVE: mock-lab
+      PORT: "8081"
+      DB_POOL_SIZE: "5"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Webhook only: verify signature, dedupe, rate limit, store. Returns in milliseconds.
+  gateway:
+    build: .
+    environment:
+      <<: *db-env
+      SPRING_PROFILES_ACTIVE: gateway
+      PORT: "8080"
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:?set WHATSAPP_APP_SECRET in .env}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:?set WHATSAPP_VERIFY_TOKEN in .env}
+      DB_POOL_SIZE: "60"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Claims messages from Postgres, runs the Claude tool loop, books through the lab client.
+  worker:
+    build: .
+    environment:
+      <<: *db-env
+      SPRING_PROFILES_ACTIVE: worker
+      PORT: "8082"
+      LAB_BASE_URL: http://mock-lab:8081
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_SCRIPTED_SPREAD: "true"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WORKER_THREADS: "16"
+      DB_POOL_SIZE: "40"
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-lab:
+        condition: service_started

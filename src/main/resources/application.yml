@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: whatsapp-agent-gateway
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/gateway}
+    username: ${DB_USER:gateway}
+    password: ${DB_PASSWORD:gateway}
+    hikari:
+      # Each worker thread holds one connection for its advisory lock, plus the connection doing the work.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+  flyway:
+    enabled: true
+
+server:
+  port: ${PORT:8080}
+
+# Values come from environment variables or .env (gitignored). Never commit real secrets.
+app:
+  whatsapp-app-secret: ${WHATSAPP_APP_SECRET:}
+  whatsapp-verify-token: ${WHATSAPP_VERIFY_TOKEN:}
+  rate-limit-max: 10
+  rate-limit-window-seconds: 60
+  lab:
+    base-url: ${LAB_BASE_URL:http://localhost:8081}
+    timeout-ms: 2000
+    max-attempts: 4
+    backoff-base-ms: 200
+    backoff-cap-ms: 3000
+  llm:
+    mode: ${LLM_MODE:mock}
+    model: claude-haiku-5-5
+    max-tokens: 1024
+    max-tool-iterations: 6
+    scripted-spread: ${LLM_SCRIPTED_SPREAD:false}
+    pricing:
+      input-per-mtok: 0.10
+      output-per-mtok: 0.50
+      cache-read-per-mtok: 0.01
+      cache-write-per-mtok: 0.125
+  worker:
+    threads: ${WORKER_THREADS:4}
+    lease-seconds: 90
+    max-attempts: 5
+    reconcile-after-seconds: 60
+    reconcile-interval-ms: 10000
+    history-rows: 40
+    outbox-interval-ms: 500
+  mock-lab:
+    failure-rate: 0.2
+    drop-response-rate: 0.1
+    hang-rate: 0.0
+    min-latency-ms: 300
+    max-latency-ms: 1500
+    hang-ms: 2500
